@@ -121,6 +121,24 @@ def to_csv_download(df: pd.DataFrame, filename: str) -> str:
         f'font-size:0.78rem;cursor:pointer;font-family:Inter,sans-serif;">⬇ Download CSV</button></a>'
     )
 
+def delete_record(table: str, record_id: int, snapshot: dict, reason: str = ""):
+    """Delete a transaction record and write to deletion_log."""
+    try:
+        sb.table(table).delete().eq("id", record_id).execute()
+        sb.table("deletion_log").insert({
+            "table_name":  table,
+            "record_id":   record_id,
+            "txn_date":    str(snapshot.get("txn_date", "")),
+            "item_code":   snapshot.get("item_code") or snapshot.get("parent_code") or "",
+            "qty":         float(snapshot.get("qty") or snapshot.get("qty_assembled") or 0),
+            "snapshot":    snapshot,
+            "reason":      reason,
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Delete failed: {e}")
+        return False
+
 def stock_badge(on_hand, safety) -> str:
     if on_hand <= 0:
         return '<span class="badge-low">OUT</span>'
@@ -146,7 +164,7 @@ with st.sidebar:
     page2 = st.radio("", ["📥 Inbound", "🔧 Assembly", "📤 Outbound"], key="nav2", label_visibility="collapsed")
 
     st.markdown('<div class="nav-section">Intelligence</div>', unsafe_allow_html=True)
-    page3 = st.radio("", ["📊 Stock", "🔮 Forecast", "📋 Ledger"], key="nav3", label_visibility="collapsed")
+    page3 = st.radio("", ["📊 Stock", "🔮 Forecast", "📋 Ledger", "🗑 Audit Log"], key="nav3", label_visibility="collapsed")
 
     st.markdown("---")
     st.markdown('<div class="nav-section">Global Filters</div>', unsafe_allow_html=True)
@@ -285,7 +303,7 @@ elif active == "📥 Inbound":
     if children_df.empty:
         st.markdown('<div class="alert-warn alert-box">⚠ No child items defined yet.</div>', unsafe_allow_html=True)
     else:
-        tab1, tab2, tab3 = st.tabs(["➕ Manual Entry", "📤 Bulk CSV Upload", "📋 History"])
+        tab1, tab2, tab3, tab4 = st.tabs(["➕ Manual Entry", "📤 Bulk CSV Upload", "📋 History", "🗑 Delete"])
 
         with tab1:
             with st.form("inbound_form"):
@@ -354,6 +372,35 @@ elif active == "📥 Inbound":
             else:
                 st.markdown('<div class="alert-info alert-box">No inbound records in selected date range.</div>', unsafe_allow_html=True)
 
+        with tab4:
+            st.markdown('<div class="alert-warn alert-box">⚠ Deleted records cannot be recovered. Each deletion is permanently logged.</div>', unsafe_allow_html=True)
+            resp = (sb.table("inbound")
+                      .select("id, txn_date, item_code, qty, invoice_no, supplier, remarks")
+                      .gte("txn_date", str(filter_date_from))
+                      .lte("txn_date", str(filter_date_to))
+                      .order("txn_date", desc=True)
+                      .execute())
+            del_df = to_df(resp)
+            if not del_df.empty:
+                if filter_item != "All Items":
+                    del_df = del_df[del_df["item_code"]==filter_item]
+                options = {
+                    f"ID {r['id']} | {r['txn_date']} | {r['item_code']} | Qty:{r['qty']} | {r.get('invoice_no','')}": r
+                    for _, r in del_df.iterrows()
+                }
+                sel_label = st.selectbox("Select record to delete", list(options.keys()), key="inb_del_sel")
+                del_reason = st.text_input("Reason for deletion *", key="inb_del_reason")
+                if st.button("🗑 Delete This Record", type="primary", key="inb_del_btn"):
+                    if not del_reason.strip():
+                        st.error("Reason is required before deleting.")
+                    else:
+                        rec = options[sel_label]
+                        if delete_record("inbound", rec["id"], dict(rec), del_reason):
+                            st.success("Record deleted and logged.")
+                            st.rerun()
+            else:
+                st.markdown('<div class="alert-info alert-box">No inbound records in selected date range.</div>', unsafe_allow_html=True)
+
 # ══════════════════════════════════════════════
 # PAGE: ASSEMBLY
 # ══════════════════════════════════════════════
@@ -365,7 +412,7 @@ elif active == "🔧 Assembly":
     if parents_df.empty:
         st.markdown('<div class="alert-warn alert-box">⚠ No parent items defined.</div>', unsafe_allow_html=True)
     else:
-        tab1, tab2 = st.tabs(["➕ Record Assembly", "📋 History"])
+        tab1, tab2, tab3 = st.tabs(["➕ Record Assembly", "📋 History", "🗑 Delete"])
 
         with tab1:
             c1, c2 = st.columns([2,1])
@@ -441,6 +488,36 @@ elif active == "🔧 Assembly":
             else:
                 st.markdown('<div class="alert-info alert-box">No assembly records in selected date range.</div>', unsafe_allow_html=True)
 
+        with tab3:
+            st.markdown('<div class="alert-warn alert-box">⚠ Deleting an assembly record will restore the component quantities back to stock. Each deletion is permanently logged.</div>', unsafe_allow_html=True)
+            resp = (sb.table("assembly")
+                      .select("id, txn_date, parent_code, qty_assembled, remarks")
+                      .gte("txn_date", str(filter_date_from))
+                      .lte("txn_date", str(filter_date_to))
+                      .order("txn_date", desc=True)
+                      .execute())
+            del_df = to_df(resp)
+            if not del_df.empty:
+                if filter_item != "All Items":
+                    del_df = del_df[del_df["parent_code"]==filter_item]
+                options = {
+                    f"ID {r['id']} | {r['txn_date']} | {r['parent_code']} | Qty:{r['qty_assembled']}": r
+                    for _, r in del_df.iterrows()
+                }
+                sel_label  = st.selectbox("Select record to delete", list(options.keys()), key="asm_del_sel")
+                del_reason = st.text_input("Reason for deletion *", key="asm_del_reason")
+                if st.button("🗑 Delete This Record", type="primary", key="asm_del_btn"):
+                    if not del_reason.strip():
+                        st.error("Reason is required before deleting.")
+                    else:
+                        rec = options[sel_label]
+                        snap = {"txn_date": rec["txn_date"], "parent_code": rec["parent_code"], "qty_assembled": rec["qty_assembled"]}
+                        if delete_record("assembly", rec["id"], snap, del_reason):
+                            st.success("Record deleted and logged.")
+                            st.rerun()
+            else:
+                st.markdown('<div class="alert-info alert-box">No assembly records in selected date range.</div>', unsafe_allow_html=True)
+
 # ══════════════════════════════════════════════
 # PAGE: OUTBOUND
 # ══════════════════════════════════════════════
@@ -452,7 +529,7 @@ elif active == "📤 Outbound":
     if parents_df.empty:
         st.markdown('<div class="alert-warn alert-box">⚠ No parent items defined.</div>', unsafe_allow_html=True)
     else:
-        tab1, tab2 = st.tabs(["➕ Record Dispatch", "📋 History"])
+        tab1, tab2, tab3 = st.tabs(["➕ Record Dispatch", "📋 History", "🗑 Delete"])
 
         with tab1:
             with st.form("outbound_form"):
@@ -467,7 +544,6 @@ elif active == "📤 Outbound":
                     remarks     = st.text_area("Remarks", height=68)
                 gp_file = st.file_uploader("Attach Gate Pass (PDF/Image)", type=["pdf","png","jpg","jpeg"])
                 if st.form_submit_button("Record Outbound", type="primary"):
-                    # Stock check
                     _, parent_stock = get_stock()
                     avail = 0
                     if not parent_stock.empty:
@@ -504,6 +580,36 @@ elif active == "📤 Outbound":
             else:
                 st.markdown('<div class="alert-info alert-box">No outbound records in selected date range.</div>', unsafe_allow_html=True)
 
+        with tab3:
+            st.markdown('<div class="alert-warn alert-box">⚠ Deleting an outbound record will restore the FG quantity back to stock. Each deletion is permanently logged.</div>', unsafe_allow_html=True)
+            resp = (sb.table("outbound")
+                      .select("id, txn_date, parent_code, qty, customer, gate_pass_no, remarks")
+                      .gte("txn_date", str(filter_date_from))
+                      .lte("txn_date", str(filter_date_to))
+                      .order("txn_date", desc=True)
+                      .execute())
+            del_df = to_df(resp)
+            if not del_df.empty:
+                if filter_item != "All Items":
+                    del_df = del_df[del_df["parent_code"]==filter_item]
+                options = {
+                    f"ID {r['id']} | {r['txn_date']} | {r['parent_code']} | Qty:{r['qty']} | {r.get('customer','')} | GP:{r.get('gate_pass_no','')}": r
+                    for _, r in del_df.iterrows()
+                }
+                sel_label  = st.selectbox("Select record to delete", list(options.keys()), key="out_del_sel")
+                del_reason = st.text_input("Reason for deletion *", key="out_del_reason")
+                if st.button("🗑 Delete This Record", type="primary", key="out_del_btn"):
+                    if not del_reason.strip():
+                        st.error("Reason is required before deleting.")
+                    else:
+                        rec = options[sel_label]
+                        snap = {"txn_date": rec["txn_date"], "parent_code": rec["parent_code"], "qty": rec["qty"], "customer": rec.get("customer",""), "gate_pass_no": rec.get("gate_pass_no","")}
+                        if delete_record("outbound", rec["id"], snap, del_reason):
+                            st.success("Record deleted and logged.")
+                            st.rerun()
+            else:
+                st.markdown('<div class="alert-info alert-box">No outbound records in selected date range.</div>', unsafe_allow_html=True)
+
 # ══════════════════════════════════════════════
 # PAGE: STOCK
 # ══════════════════════════════════════════════
@@ -525,33 +631,67 @@ elif active == "📊 Stock":
     with c4: st.markdown(f'<div class="kpi-card"><div class="kpi-label">FG Ready to Ship</div><div class="kpi-value" style="color:#16a34a">{total_fg:,.0f}</div><div class="kpi-sub">assembled units</div></div>', unsafe_allow_html=True)
 
     st.markdown("---")
-    col_l, col_r = st.columns(2)
 
-    with col_l:
-        st.markdown("**Child Components (Raw / WIP)**")
-        if not child_stock.empty:
-            df = child_stock.copy()
-            if filter_item != "All Items":
-                df = df[df["item_code"]==filter_item]
-            df["Status"] = df.apply(lambda r: stock_badge(r["stock_on_hand"], r["safety_stock"]), axis=1)
-            cols = ["item_code","item_name","uom","total_inbound","total_consumed","stock_on_hand","safety_stock","Status"]
-            st.markdown(df[cols].to_html(index=False, escape=False), unsafe_allow_html=True)
-            st.markdown(to_csv_download(df[cols], "child_stock.csv"), unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="alert-info alert-box">No component data yet.</div>', unsafe_allow_html=True)
+    def status_label(on_hand, safety):
+        if on_hand <= 0:     return "🔴 OUT"
+        elif on_hand <= safety: return "🟡 LOW"
+        return "🟢 OK"
 
-    with col_r:
-        st.markdown("**Parent Items (Finished Goods)**")
-        if not parent_stock.empty:
-            df = parent_stock.copy()
-            if filter_item != "All Items":
-                df = df[df["item_code"]==filter_item]
-            df["Status"] = df.apply(lambda r: stock_badge(r["stock_on_hand"], r["safety_stock"]), axis=1)
-            cols = ["item_code","item_name","uom","total_assembled","total_dispatched","stock_on_hand","safety_stock","Status"]
-            st.markdown(df[cols].to_html(index=False, escape=False), unsafe_allow_html=True)
-            st.markdown(to_csv_download(df[cols], "parent_stock.csv"), unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="alert-info alert-box">No FG data yet.</div>', unsafe_allow_html=True)
+    # ── Child Components ──────────────────────────────────
+    st.markdown("#### 🔩 Child Components (Raw / WIP)")
+    if not child_stock.empty:
+        df = child_stock.copy()
+        if filter_item != "All Items":
+            df = df[df["item_code"] == filter_item]
+        df["status"] = df.apply(lambda r: status_label(r["stock_on_hand"], r["safety_stock"]), axis=1)
+        display_cols = ["item_code","item_name","uom","total_inbound","total_consumed","stock_on_hand","safety_stock","status"]
+        st.dataframe(
+            df[display_cols],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "item_code":      st.column_config.TextColumn("Item Code",    width="small"),
+                "item_name":      st.column_config.TextColumn("Name",         width="medium"),
+                "uom":            st.column_config.TextColumn("UOM",          width="small"),
+                "total_inbound":  st.column_config.NumberColumn("Total In",   width="small", format="%.0f"),
+                "total_consumed": st.column_config.NumberColumn("Consumed",   width="small", format="%.0f"),
+                "stock_on_hand":  st.column_config.NumberColumn("On Hand",    width="small", format="%.0f"),
+                "safety_stock":   st.column_config.NumberColumn("Safety Qty", width="small", format="%.0f"),
+                "status":         st.column_config.TextColumn("Status",       width="small"),
+            }
+        )
+        st.markdown(to_csv_download(df[display_cols], "child_stock.csv"), unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="alert-info alert-box">No component data yet.</div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Parent / Finished Goods ───────────────────────────
+    st.markdown("#### 📦 Parent Items (Finished Goods)")
+    if not parent_stock.empty:
+        df = parent_stock.copy()
+        if filter_item != "All Items":
+            df = df[df["item_code"] == filter_item]
+        df["status"] = df.apply(lambda r: status_label(r["stock_on_hand"], r["safety_stock"]), axis=1)
+        display_cols = ["item_code","item_name","uom","total_assembled","total_dispatched","stock_on_hand","safety_stock","status"]
+        st.dataframe(
+            df[display_cols],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "item_code":       st.column_config.TextColumn("Item Code",     width="small"),
+                "item_name":       st.column_config.TextColumn("Name",          width="medium"),
+                "uom":             st.column_config.TextColumn("UOM",           width="small"),
+                "total_assembled": st.column_config.NumberColumn("Assembled",   width="small", format="%.0f"),
+                "total_dispatched":st.column_config.NumberColumn("Dispatched",  width="small", format="%.0f"),
+                "stock_on_hand":   st.column_config.NumberColumn("On Hand",     width="small", format="%.0f"),
+                "safety_stock":    st.column_config.NumberColumn("Safety Qty",  width="small", format="%.0f"),
+                "status":          st.column_config.TextColumn("Status",        width="small"),
+            }
+        )
+        st.markdown(to_csv_download(df[display_cols], "parent_stock.csv"), unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="alert-info alert-box">No FG data yet.</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
 # PAGE: FORECAST
@@ -673,9 +813,68 @@ elif active == "📋 Ledger":
     else:
         st.markdown('<div class="alert-info alert-box">No transactions in selected date range.</div>', unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-# FOOTER
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════
+# PAGE: AUDIT LOG
+# ══════════════════════════════════════════════
+elif active == "🗑 Audit Log":
+    st.markdown('<div class="section-title">Deletion Audit Log</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Immutable record of every deleted transaction — who deleted what, when, and why</div>', unsafe_allow_html=True)
+
+    resp = (sb.table("deletion_log")
+              .select("*")
+              .gte("deleted_at", str(filter_date_from))
+              .lte("deleted_at", str(filter_date_to) + "T23:59:59")
+              .order("deleted_at", desc=True)
+              .execute())
+    df = to_df(resp)
+
+    if not df.empty:
+        if filter_item != "All Items":
+            df = df[df["item_code"] == filter_item]
+
+        # KPIs
+        c1, c2, c3 = st.columns(3)
+        with c1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Deletions</div><div class="kpi-value">{len(df)}</div><div class="kpi-sub">in selected period</div></div>', unsafe_allow_html=True)
+        with c2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Inbound Deleted</div><div class="kpi-value">{len(df[df["table_name"]=="inbound"])}</div></div>', unsafe_allow_html=True)
+        with c3:
+            asm_del = len(df[df["table_name"]=="assembly"])
+            out_del = len(df[df["table_name"]=="outbound"])
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">Assembly / Outbound</div><div class="kpi-value">{asm_del} / {out_del}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # Filter by table
+        tbl_filter = st.multiselect("Filter by Transaction Type", ["inbound","assembly","outbound"], default=["inbound","assembly","outbound"], key="audit_tbl")
+        df_f = df[df["table_name"].isin(tbl_filter)]
+
+        display_cols = ["deleted_at","table_name","record_id","txn_date","item_code","qty","reason"]
+        st.dataframe(
+            df_f[display_cols],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "deleted_at":  st.column_config.DatetimeColumn("Deleted At",   width="medium", format="DD MMM YYYY, HH:mm"),
+                "table_name":  st.column_config.TextColumn("Table",            width="small"),
+                "record_id":   st.column_config.NumberColumn("Record ID",      width="small", format="%d"),
+                "txn_date":    st.column_config.DateColumn("Txn Date",         width="small"),
+                "item_code":   st.column_config.TextColumn("Item",             width="small"),
+                "qty":         st.column_config.NumberColumn("Qty",            width="small", format="%.0f"),
+                "reason":      st.column_config.TextColumn("Reason",           width="large"),
+            }
+        )
+        st.markdown(to_csv_download(df_f[display_cols], "deletion_audit_log.csv"), unsafe_allow_html=True)
+
+        # Expandable full snapshot view
+        st.markdown("---")
+        st.markdown("**Full Snapshots** — original record data at time of deletion")
+        for _, row in df_f.iterrows():
+            with st.expander(f"ID {row['record_id']} | {row['table_name']} | {row['txn_date']} | {row['item_code']} | {row['deleted_at']}"):
+                st.json(row.get("snapshot") or {})
+                st.markdown(f"**Reason:** {row.get('reason','—')}")
+    else:
+        st.markdown('<div class="alert-info alert-box">No deletions recorded in selected date range.</div>', unsafe_allow_html=True)
+
+
 st.markdown("---")
 st.markdown(
     '<div style="text-align:center;font-size:0.72rem;color:#94a3b8;padding:0.5rem 0;">'
