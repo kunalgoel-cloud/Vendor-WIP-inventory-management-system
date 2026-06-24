@@ -161,7 +161,7 @@ with st.sidebar:
     page1 = st.radio("", ["🏷 Item Codes", "🔗 BOM"], key="nav1", label_visibility="collapsed")
 
     st.markdown('<div class="nav-section">Transactions</div>', unsafe_allow_html=True)
-    page2 = st.radio("", ["📥 Inbound", "🔧 Assembly", "📤 Outbound"], key="nav2", label_visibility="collapsed")
+    page2 = st.radio("", ["📥 Inbound", "🔧 Assembly", "📤 Outbound", "⚖️ Adjustments"], key="nav2", label_visibility="collapsed")
 
     st.markdown('<div class="nav-section">Intelligence</div>', unsafe_allow_html=True)
     page3 = st.radio("", ["📊 Stock", "🔮 Forecast", "📋 Ledger", "🗑 Audit Log"], key="nav3", label_visibility="collapsed")
@@ -174,6 +174,33 @@ with st.sidebar:
     all_items_df = get_items()
     item_filter_options = ["All Items"] + (all_items_df["item_code"].tolist() if not all_items_df.empty else [])
     filter_item = st.selectbox("Item Filter", item_filter_options)
+
+    # Live stock status widget
+    st.markdown("---")
+    st.markdown('<div class="nav-section">Stock Status</div>', unsafe_allow_html=True)
+    _cs, _ps = get_child_stock(), get_parent_stock()
+    if not _cs.empty or not _ps.empty:
+        _all = pd.concat([_cs[["item_code","stock_on_hand","safety_stock"]] if not _cs.empty else pd.DataFrame(),
+                          _ps[["item_code","stock_on_hand","safety_stock"]] if not _ps.empty else pd.DataFrame()], ignore_index=True)
+        _out  = int((_all["stock_on_hand"] <= 0).sum())
+        _low  = int(((_all["stock_on_hand"] > 0) & (_all["stock_on_hand"] <= _all["safety_stock"])).sum())
+        _ok   = int((_all["stock_on_hand"] > _all["safety_stock"]).sum())
+        st.markdown(f"""
+        <div style="padding:0.6rem 0.2rem;font-size:0.78rem;line-height:2">
+            <span style="color:#4ade80">●</span> <b style="color:#f1f5f9">{_ok}</b> <span style="color:#64748b">items OK</span><br>
+            <span style="color:#fbbf24">●</span> <b style="color:#f1f5f9">{_low}</b> <span style="color:#64748b">items LOW</span><br>
+            <span style="color:#f87171">●</span> <b style="color:#f1f5f9">{_out}</b> <span style="color:#64748b">items OUT</span>
+        </div>
+        """, unsafe_allow_html=True)
+        if not _cs.empty:
+            low_items = _cs[(_cs["stock_on_hand"] > 0) & (_cs["stock_on_hand"] <= _cs["safety_stock"])]["item_code"].tolist()
+            out_items = _cs[_cs["stock_on_hand"] <= 0]["item_code"].tolist()
+            if out_items:
+                st.markdown(f'<div style="font-size:0.7rem;color:#f87171;padding:0.2rem 0.2rem">🔴 Out: {", ".join(out_items[:3])}{"…" if len(out_items)>3 else ""}</div>', unsafe_allow_html=True)
+            if low_items:
+                st.markdown(f'<div style="font-size:0.7rem;color:#fbbf24;padding:0.2rem 0.2rem">🟡 Low: {", ".join(low_items[:3])}{"…" if len(low_items)>3 else ""}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="font-size:0.75rem;color:#475569;padding:0.4rem 0.2rem">No stock data yet.</div>', unsafe_allow_html=True)
 
 # Track which nav group was last used
 for key, val in {"nav1": page1, "nav2": page2, "nav3": page3}.items():
@@ -611,6 +638,162 @@ elif active == "📤 Outbound":
                 st.markdown('<div class="alert-info alert-box">No outbound records in selected date range.</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
+# PAGE: ADJUSTMENTS
+# ══════════════════════════════════════════════
+elif active == "⚖️ Adjustments":
+    st.markdown('<div class="section-title">Stock Adjustments</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-sub">Record inventory corrections — expiry, wastage, damage, found stock, or audit adjustments</div>', unsafe_allow_html=True)
+
+    all_items_df = get_items()
+    if all_items_df.empty:
+        st.markdown('<div class="alert-warn alert-box">⚠ No items defined yet.</div>', unsafe_allow_html=True)
+    else:
+        tab1, tab2, tab3 = st.tabs(["➕ New Adjustment", "📋 History", "🗑 Delete"])
+
+        REASON_CATEGORIES = ["expiry", "wastage", "damage", "found", "correction", "audit", "other"]
+        REASON_ICONS = {"expiry":"⏰","wastage":"🗑","damage":"💥","found":"🔍","correction":"✏️","audit":"📋","other":"📝"}
+
+        with tab1:
+            c1, c2 = st.columns(2)
+            with c1:
+                adj_type = st.radio("Adjustment Direction", ["deduct","add"],
+                    format_func=lambda x: "➖ Deduct from Stock" if x=="deduct" else "➕ Add to Stock",
+                    horizontal=True)
+            st.markdown("")
+
+            with st.form("adj_form"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    txn_date  = st.date_input("Date *", value=date.today())
+                    item_sel  = st.selectbox("Item *", all_items_df["item_code"].tolist(),
+                        format_func=lambda x: f"{x} — {all_items_df.set_index('item_code').loc[x,'item_name']}")
+                    qty       = st.number_input("Quantity *", min_value=0.01, step=1.0)
+                with c2:
+                    reason_cat = st.selectbox("Reason Category *",
+                        REASON_CATEGORIES,
+                        format_func=lambda x: f"{REASON_ICONS.get(x,'')} {x.title()}")
+                    reason_notes = st.text_area("Additional Notes", height=100,
+                        placeholder="e.g. Batch MFG-2024-03 expired during vendor hold...")
+
+                # Live stock preview
+                child_stock, parent_stock = get_stock()
+                all_stock = pd.concat([
+                    child_stock[["item_code","stock_on_hand","uom"]] if not child_stock.empty else pd.DataFrame(),
+                    parent_stock[["item_code","stock_on_hand","uom"]] if not parent_stock.empty else pd.DataFrame()
+                ], ignore_index=True)
+
+                if not all_stock.empty:
+                    m = all_stock[all_stock["item_code"]==item_sel]
+                    current_qty = float(m["stock_on_hand"].iloc[0]) if not m.empty else 0
+                    uom_val = m["uom"].iloc[0] if not m.empty else ""
+                    after = current_qty - qty if adj_type == "deduct" else current_qty + qty
+                    color = "#dc2626" if after < 0 else "#16a34a"
+                    st.markdown(f"""
+                    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.8rem 1rem;margin-top:0.5rem;font-size:0.82rem;">
+                        <b>Stock Preview</b><br>
+                        Current: <b>{current_qty:,.0f} {uom_val}</b> &nbsp;→&nbsp;
+                        After adjustment: <b style="color:{color}">{after:,.0f} {uom_val}</b>
+                        {"&nbsp;&nbsp;<span style='color:#dc2626'>⚠ Will go negative</span>" if after < 0 else ""}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                if st.form_submit_button("Save Adjustment", type="primary"):
+                    if not reason_notes.strip() and reason_cat == "other":
+                        st.error("Notes are required for 'Other' category.")
+                    else:
+                        try:
+                            sb.table("stock_adjustments").insert({
+                                "txn_date":        str(txn_date),
+                                "item_code":       item_sel,
+                                "adjustment_type": adj_type,
+                                "qty":             qty,
+                                "reason_category": reason_cat,
+                                "reason_notes":    reason_notes,
+                            }).execute()
+                            direction = "deducted from" if adj_type == "deduct" else "added to"
+                            st.success(f"✅ {qty:,.0f} units {direction} stock for {item_sel} ({reason_cat})")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+        with tab2:
+            resp = (sb.table("stock_adjustments")
+                      .select("id, txn_date, item_code, adjustment_type, qty, reason_category, reason_notes, created_at")
+                      .gte("txn_date", str(filter_date_from))
+                      .lte("txn_date", str(filter_date_to))
+                      .order("txn_date", desc=True)
+                      .execute())
+            df = to_df(resp)
+            if not df.empty:
+                if filter_item != "All Items":
+                    df = df[df["item_code"]==filter_item]
+
+                # Summary KPIs
+                total_deducted = df[df["adjustment_type"]=="deduct"]["qty"].sum()
+                total_added    = df[df["adjustment_type"]=="add"]["qty"].sum()
+                c1, c2, c3 = st.columns(3)
+                with c1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Adjustments</div><div class="kpi-value">{len(df)}</div></div>', unsafe_allow_html=True)
+                with c2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Deducted</div><div class="kpi-value" style="color:#dc2626">{total_deducted:,.0f}</div></div>', unsafe_allow_html=True)
+                with c3: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Added</div><div class="kpi-value" style="color:#16a34a">{total_added:,.0f}</div></div>', unsafe_allow_html=True)
+
+                st.markdown("")
+
+                # Breakdown by reason
+                if len(df) > 0:
+                    reason_summary = df.groupby(["reason_category","adjustment_type"])["qty"].sum().reset_index()
+                    reason_summary.columns = ["Category","Direction","Qty"]
+                    st.markdown("**By Reason Category**")
+                    st.dataframe(reason_summary, use_container_width=True, hide_index=True)
+
+                st.markdown("**All Records**")
+                st.dataframe(
+                    df.drop(columns=["id"]),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "txn_date":        st.column_config.DateColumn("Date",          width="small"),
+                        "item_code":       st.column_config.TextColumn("Item",          width="small"),
+                        "adjustment_type": st.column_config.TextColumn("Type",          width="small"),
+                        "qty":             st.column_config.NumberColumn("Qty",         width="small", format="%.0f"),
+                        "reason_category": st.column_config.TextColumn("Category",      width="small"),
+                        "reason_notes":    st.column_config.TextColumn("Notes",         width="large"),
+                        "created_at":      st.column_config.DatetimeColumn("Logged At", width="medium", format="DD MMM YYYY, HH:mm"),
+                    }
+                )
+                st.markdown(to_csv_download(df.drop(columns=["id"]), "adjustments.csv"), unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="alert-info alert-box">No adjustment records in selected date range.</div>', unsafe_allow_html=True)
+
+        with tab3:
+            st.markdown('<div class="alert-warn alert-box">⚠ Deleting an adjustment will reverse its effect on stock. The deletion is permanently logged.</div>', unsafe_allow_html=True)
+            resp = (sb.table("stock_adjustments")
+                      .select("id, txn_date, item_code, adjustment_type, qty, reason_category, reason_notes")
+                      .gte("txn_date", str(filter_date_from))
+                      .lte("txn_date", str(filter_date_to))
+                      .order("txn_date", desc=True)
+                      .execute())
+            del_df = to_df(resp)
+            if not del_df.empty:
+                if filter_item != "All Items":
+                    del_df = del_df[del_df["item_code"]==filter_item]
+                options = {
+                    f"ID {r['id']} | {r['txn_date']} | {r['item_code']} | {r['adjustment_type'].upper()} {r['qty']} | {r['reason_category']}": r
+                    for _, r in del_df.iterrows()
+                }
+                sel_label  = st.selectbox("Select record to delete", list(options.keys()), key="adj_del_sel")
+                del_reason = st.text_input("Reason for deletion *", key="adj_del_reason")
+                if st.button("🗑 Delete This Adjustment", type="primary", key="adj_del_btn"):
+                    if not del_reason.strip():
+                        st.error("Reason is required.")
+                    else:
+                        rec = options[sel_label]
+                        snap = {k: rec[k] for k in ["txn_date","item_code","adjustment_type","qty","reason_category","reason_notes"]}
+                        if delete_record("stock_adjustments", rec["id"], snap, del_reason):
+                            st.success("Adjustment deleted and logged.")
+                            st.rerun()
+            else:
+                st.markdown('<div class="alert-info alert-box">No adjustment records in selected date range.</div>', unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════
 # PAGE: STOCK
 # ══════════════════════════════════════════════
 elif active == "📊 Stock":
@@ -644,7 +827,7 @@ elif active == "📊 Stock":
         if filter_item != "All Items":
             df = df[df["item_code"] == filter_item]
         df["status"] = df.apply(lambda r: status_label(r["stock_on_hand"], r["safety_stock"]), axis=1)
-        display_cols = ["item_code","item_name","uom","total_inbound","total_consumed","stock_on_hand","safety_stock","status"]
+        display_cols = ["item_code","item_name","uom","total_inbound","total_consumed","total_adjusted","stock_on_hand","safety_stock","status"]
         st.dataframe(
             df[display_cols],
             use_container_width=True,
@@ -655,6 +838,7 @@ elif active == "📊 Stock":
                 "uom":            st.column_config.TextColumn("UOM",          width="small"),
                 "total_inbound":  st.column_config.NumberColumn("Total In",   width="small", format="%.0f"),
                 "total_consumed": st.column_config.NumberColumn("Consumed",   width="small", format="%.0f"),
+                "total_adjusted": st.column_config.NumberColumn("Adjusted",   width="small", format="%.0f"),
                 "stock_on_hand":  st.column_config.NumberColumn("On Hand",    width="small", format="%.0f"),
                 "safety_stock":   st.column_config.NumberColumn("Safety Qty", width="small", format="%.0f"),
                 "status":         st.column_config.TextColumn("Status",       width="small"),
@@ -673,7 +857,7 @@ elif active == "📊 Stock":
         if filter_item != "All Items":
             df = df[df["item_code"] == filter_item]
         df["status"] = df.apply(lambda r: status_label(r["stock_on_hand"], r["safety_stock"]), axis=1)
-        display_cols = ["item_code","item_name","uom","total_assembled","total_dispatched","stock_on_hand","safety_stock","status"]
+        display_cols = ["item_code","item_name","uom","total_assembled","total_dispatched","total_adjusted","stock_on_hand","safety_stock","status"]
         st.dataframe(
             df[display_cols],
             use_container_width=True,
@@ -684,6 +868,7 @@ elif active == "📊 Stock":
                 "uom":             st.column_config.TextColumn("UOM",           width="small"),
                 "total_assembled": st.column_config.NumberColumn("Assembled",   width="small", format="%.0f"),
                 "total_dispatched":st.column_config.NumberColumn("Dispatched",  width="small", format="%.0f"),
+                "total_adjusted":  st.column_config.NumberColumn("Adjusted",    width="small", format="%.0f"),
                 "stock_on_hand":   st.column_config.NumberColumn("On Hand",     width="small", format="%.0f"),
                 "safety_stock":    st.column_config.NumberColumn("Safety Qty",  width="small", format="%.0f"),
                 "status":          st.column_config.TextColumn("Status",        width="small"),
