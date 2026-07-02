@@ -119,7 +119,7 @@ def photo_widget(label, key, folder):
     fb = src.getvalue()
     fn = getattr(src,"name",f"photo_{key}.jpg")
     if fn.lower().split(".")[-1] in ("png","jpg","jpeg","webp"):
-        st.image(fb, caption="Preview", use_container_width=True)
+        st.image(fb, caption="Preview", width=None)
     url = upload_photo(fb, fn, folder)
     return url, fn
 
@@ -283,13 +283,13 @@ with st.sidebar:
 
         st.markdown("---")
         st.markdown('<div class="nav-section">Master Data</div>', unsafe_allow_html=True)
-        page1 = st.radio("", ["🏷 Item Codes","🔗 BOM","🏭 Sites"], key="nav1", label_visibility="collapsed")
+        page1 = st.radio("Navigation", ["🏷 Item Codes","🔗 BOM","🏭 Sites"], key="nav1", label_visibility="collapsed")
 
         st.markdown('<div class="nav-section">Transactions</div>', unsafe_allow_html=True)
-        page2 = st.radio("", ["📥 Inbound","🔧 Assembly","📤 Outbound","⚖️ Adjustments"], key="nav2", label_visibility="collapsed")
+        page2 = st.radio("Navigation", ["📥 Inbound","🔧 Assembly","📤 Outbound","⚖️ Adjustments"], key="nav2", label_visibility="collapsed")
 
         st.markdown('<div class="nav-section">Intelligence</div>', unsafe_allow_html=True)
-        page3 = st.radio("", ["📊 Stock","🔮 Forecast","📋 Ledger","🗑 Audit Log"], key="nav3", label_visibility="collapsed")
+        page3 = st.radio("Navigation", ["📊 Stock","🔮 Forecast","📋 Ledger","🗑 Audit Log"], key="nav3", label_visibility="collapsed")
 
         st.markdown("---")
         st.markdown('<div class="nav-section">Global Filters</div>', unsafe_allow_html=True)
@@ -903,7 +903,7 @@ elif active == "⚖️ Adjustments":
                     st.markdown("**Evidence Photos**")
                     for _,row in photos.iterrows():
                         with st.expander(f"{row['txn_date']} · {row['item_code']} · {row['reason_category']}"):
-                            st.image(row["photo_url"],use_container_width=True)
+                            st.image(row["photo_url"], width=None)
                             st.caption(row.get("reason_notes",""))
                 st.markdown(to_csv_dl(df.drop(columns=["id","photo_url"]),"adjustments.csv"),unsafe_allow_html=True)
             else: st.markdown('<div class="alert-info alert-box">No records.</div>',unsafe_allow_html=True)
