@@ -1017,12 +1017,63 @@ elif active == "🗑 Audit Log":
     st.markdown('<div class="section-title">Deletion Audit Log</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-sub">Every deletion at this site — immutable record</div>', unsafe_allow_html=True)
 
-    resp=(sb.table("deletion_log").select("*").eq("site_id",sid)
-            .gte("deleted_at",str(filter_date_from)).lte("deleted_at",str(filter_date_to)+"T23:59:59")
-            .order("deleted_at",desc=True).execute())
-    df=to_df(resp)
+    resp = (sb.table("deletion_log").select("*").eq("site_id", sid)
+              .gte("deleted_at", str(filter_date_from))
+              .lte("deleted_at", str(filter_date_to) + "T23:59:59")
+              .order("deleted_at", desc=True).execute())
+    df = to_df(resp)
+
     if not df.empty:
-        if filter_item!="All Items": df=df[df["item_code"]==filter_item]
-        c1,c2,c3=st.columns(3)
-        with c1: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total</div><div class="kpi-value">{len(df)}</div></div>',unsafe_allow_html=True)
-        with c2: st.markdown(f'<div class="kpi-card"><div class="kpi-label">Inbound</div><div class="kpi-value">{len(df[df["table_name"]=="inbound"])}</div></div>',unsafe_allow_ht
+        if filter_item != "All Items":
+            df = df[df["item_code"] == filter_item]
+
+        c1, c2, c3 = st.columns(3)
+        inbound_count = len(df[df["table_name"] == "inbound"])
+        other_count   = len(df[df["table_name"].isin(["assembly","outbound","stock_adjustments"])])
+        with c1:
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">Total Deletions</div><div class="kpi-value">{len(df)}</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">Inbound</div><div class="kpi-value">{inbound_count}</div></div>', unsafe_allow_html=True)
+        with c3:
+            st.markdown(f'<div class="kpi-card"><div class="kpi-label">Asm / Out / Adj</div><div class="kpi-value">{other_count}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("---")
+        tbl_f = st.multiselect(
+            "Filter by Table",
+            ["inbound", "assembly", "outbound", "stock_adjustments"],
+            default=["inbound", "assembly", "outbound", "stock_adjustments"]
+        )
+        df_f = df[df["table_name"].isin(tbl_f)]
+
+        st.dataframe(
+            df_f[["deleted_at","table_name","record_id","txn_date","item_code","qty","reason"]],
+            use_container_width=True, hide_index=True,
+            column_config={
+                "deleted_at":  st.column_config.DatetimeColumn("Deleted At", format="DD MMM YY HH:mm"),
+                "table_name":  st.column_config.TextColumn("Table",    width="small"),
+                "record_id":   st.column_config.NumberColumn("ID",     width="small", format="%d"),
+                "txn_date":    st.column_config.DateColumn("Txn Date", width="small"),
+                "item_code":   st.column_config.TextColumn("Item",     width="small"),
+                "qty":         st.column_config.NumberColumn("Qty",    width="small", format="%.0f"),
+                "reason":      st.column_config.TextColumn("Reason",   width="large"),
+            }
+        )
+        st.markdown(to_csv_dl(df_f, "audit_log.csv"), unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown("**Full Snapshots**")
+        for _, row in df_f.iterrows():
+            with st.expander(f"{row['table_name']} · ID {row['record_id']} · {row['txn_date']} · {row['item_code']}"):
+                st.json(row.get("snapshot") or {})
+                st.markdown(f"**Reason:** {row.get('reason', '—')}")
+    else:
+        st.markdown('<div class="alert-info alert-box">No deletions in selected date range.</div>', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
+# FOOTER
+# ─────────────────────────────────────────────
+st.markdown("---")
+st.markdown(
+    '<div style="text-align:center;font-size:.7rem;color:#94a3b8">VendorLens WIP Manager · Streamlit + Supabase</div>',
+    unsafe_allow_html=True
+)
