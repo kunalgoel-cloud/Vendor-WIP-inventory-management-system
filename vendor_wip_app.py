@@ -514,27 +514,56 @@ elif active == "🔗 BOM":
         tab1, tab2 = st.tabs(["➕ Add BOM Line", "📋 View BOM Tree"])
 
         with tab1:
-            item_opts_all = all_items["item_code"].tolist()
-            fmt = {r["item_code"]: f"{r['item_code']} — {r['item_name']} [{r['item_type']}]" for _, r in all_items.iterrows()}
+            all_codes = all_items["item_code"].tolist()
+            fmt = {r["item_code"]: f"{r['item_code']} — {r['item_name']} [{r['item_type']}]"
+                   for _, r in all_items.iterrows()}
 
-            with st.form("bom_form"):
-                parent_sel = st.selectbox("Parent Item", item_opts_all,
+            # Step 1: pick parent OUTSIDE form so child list can react dynamically
+            parent_sel = st.selectbox(
+                "Parent Item (being assembled / produced)",
+                all_codes,
+                format_func=lambda x: fmt.get(x, x),
+                key="bom_parent_sel"
+            )
+
+            # Step 2: child list excludes the selected parent
+            child_codes = [c for c in all_codes if c != parent_sel]
+            if not child_codes:
+                st.markdown('<div class="alert-warn alert-box">⚠ No other items available to use as component.</div>', unsafe_allow_html=True)
+            else:
+                child_sel = st.selectbox(
+                    "Child / Component (consumed to make parent)",
+                    child_codes,
                     format_func=lambda x: fmt.get(x, x),
-                    help="The item being assembled / produced")
-                child_sel  = st.selectbox("Child / Component", item_opts_all,
-                    format_func=lambda x: fmt.get(x, x),
-                    help="The item consumed to make the parent. Can itself be an intermediate (sub-assembly).")
-                qty_per    = st.number_input("Qty of Child per 1 Parent", min_value=0.001, step=0.5, value=1.0)
-                if st.form_submit_button("Add BOM Line", type="primary"):
-                    if parent_sel == child_sel:
-                        st.error("Parent and child cannot be the same item.")
-                    else:
+                    key="bom_child_sel",
+                    help="Can be a raw child or an intermediate sub-assembly."
+                )
+
+                # Show what already exists for this parent
+                existing = to_df(
+                    sb.table("bom").select("child_code, qty_per")
+                      .eq("parent_code", parent_sel).eq("site_id", sid).execute()
+                )
+                if not existing.empty:
+                    existing_fmt = ", ".join(
+                        f"{r['child_code']} ×{r['qty_per']}" for _, r in existing.iterrows()
+                    )
+                    st.markdown(f'<div class="alert-info alert-box">ℹ <b>{parent_sel}</b> already uses: {existing_fmt}</div>',
+                        unsafe_allow_html=True)
+
+                with st.form("bom_form"):
+                    qty_per = st.number_input(
+                        f"Qty of  '{child_sel}'  needed per 1 unit of  '{parent_sel}'",
+                        min_value=0.001, step=0.5, value=1.0
+                    )
+                    if st.form_submit_button("Add BOM Line", type="primary"):
                         try:
                             sb.table("bom").upsert(
-                                {"parent_code":parent_sel,"child_code":child_sel,"qty_per":qty_per,"site_id":sid},
+                                {"parent_code": parent_sel, "child_code": child_sel,
+                                 "qty_per": qty_per, "site_id": sid},
                                 on_conflict="parent_code,child_code"
                             ).execute()
-                            st.success(f"✅ {parent_sel} → {child_sel} × {qty_per}")
+                            st.success(f"✅ {fmt.get(parent_sel,parent_sel)}  →  {fmt.get(child_sel,child_sel)}  × {qty_per}")
                         except Exception as e:
                             st.error(f"Error: {e}")
 
