@@ -514,58 +514,67 @@ elif active == "🔗 BOM":
         tab1, tab2 = st.tabs(["➕ Add BOM Line", "📋 View BOM Tree"])
 
         with tab1:
-            all_codes = all_items["item_code"].tolist()
             fmt = {r["item_code"]: f"{r['item_code']} — {r['item_name']} [{r['item_type']}]"
                    for _, r in all_items.iterrows()}
+            all_labels = [fmt[c] for c in all_items["item_code"].tolist()]
+            code_from_label = {v: k for k, v in fmt.items()}
 
-            # Step 1: pick parent OUTSIDE form so child list can react dynamically
-            parent_sel = st.selectbox(
-                "Parent Item (being assembled / produced)",
-                all_codes,
-                format_func=lambda x: fmt.get(x, x),
-                key="bom_parent_sel"
+            st.markdown("**Step 1 — Select Parent (item being assembled)**")
+            parent_search = st.text_input("🔍 Search parent by name or code", key="bom_p_search",
+                placeholder="Type to filter…")
+            filtered_parents = [lbl for lbl in all_labels
+                                if parent_search.lower() in lbl.lower()] if parent_search else all_labels
+            if not filtered_parents:
+                st.markdown('<div class="alert-warn alert-box">No items match that search.</div>', unsafe_allow_html=True)
+                st.stop()
+
+            parent_label = st.selectbox("Parent Item", filtered_parents, key="bom_parent_sel")
+            parent_sel   = code_from_label[parent_label]
+
+            st.markdown("---")
+            st.markdown("**Step 2 — Select Child / Component**")
+            child_search = st.text_input("🔍 Search child by name or code", key="bom_c_search",
+                placeholder="Type to filter…")
+            child_candidates = [lbl for lbl in all_labels
+                                if code_from_label[lbl] != parent_sel]
+            filtered_children = [lbl for lbl in child_candidates
+                                 if child_search.lower() in lbl.lower()] if child_search else child_candidates
+            if not filtered_children:
+                st.markdown('<div class="alert-warn alert-box">No items match that search.</div>', unsafe_allow_html=True)
+                st.stop()
+
+            child_label = st.selectbox("Child / Component", filtered_children, key="bom_child_sel")
+            child_sel   = code_from_label[child_label]
+
+            # Show existing BOM lines for this parent
+            existing = to_df(
+                sb.table("bom").select("child_code, qty_per")
+                  .eq("parent_code", parent_sel).eq("site_id", sid).execute()
             )
-
-            # Step 2: child list excludes the selected parent
-            child_codes = [c for c in all_codes if c != parent_sel]
-            if not child_codes:
-                st.markdown('<div class="alert-warn alert-box">⚠ No other items available to use as component.</div>', unsafe_allow_html=True)
-            else:
-                child_sel = st.selectbox(
-                    "Child / Component (consumed to make parent)",
-                    child_codes,
-                    format_func=lambda x: fmt.get(x, x),
-                    key="bom_child_sel",
-                    help="Can be a raw child or an intermediate sub-assembly."
+            if not existing.empty:
+                existing_fmt = ", ".join(
+                    f"{r['child_code']} ×{r['qty_per']}" for _, r in existing.iterrows()
                 )
+                st.markdown(f'<div class="alert-info alert-box">ℹ <b>{parent_sel}</b> already uses: {existing_fmt}</div>',
+                    unsafe_allow_html=True)
 
-                # Show what already exists for this parent
-                existing = to_df(
-                    sb.table("bom").select("child_code, qty_per")
-                      .eq("parent_code", parent_sel).eq("site_id", sid).execute()
+            st.markdown("---")
+            st.markdown("**Step 3 — Set Quantity**")
+            with st.form("bom_form"):
+                qty_per = st.number_input(
+                    f"Qty of '{child_sel}' per 1 unit of '{parent_sel}'",
+                    min_value=0.001, step=0.5, value=1.0
                 )
-                if not existing.empty:
-                    existing_fmt = ", ".join(
-                        f"{r['child_code']} ×{r['qty_per']}" for _, r in existing.iterrows()
-                    )
-                    st.markdown(f'<div class="alert-info alert-box">ℹ <b>{parent_sel}</b> already uses: {existing_fmt}</div>',
-                        unsafe_allow_html=True)
-
-                with st.form("bom_form"):
-                    qty_per = st.number_input(
-                        f"Qty of  '{child_sel}'  needed per 1 unit of  '{parent_sel}'",
-                        min_value=0.001, step=0.5, value=1.0
-                    )
-                    if st.form_submit_button("Add BOM Line", type="primary"):
-                        try:
-                            sb.table("bom").upsert(
-                                {"parent_code": parent_sel, "child_code": child_sel,
-                                 "qty_per": qty_per, "site_id": sid},
-                                on_conflict="parent_code,child_code"
-                            ).execute()
-                            st.success(f"✅ {fmt.get(parent_sel,parent_sel)}  →  {fmt.get(child_sel,child_sel)}  × {qty_per}")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
+                if st.form_submit_button("✅ Add BOM Line", type="primary"):
+                    try:
+                        sb.table("bom").upsert(
+                            {"parent_code": parent_sel, "child_code": child_sel,
+                             "qty_per": qty_per, "site_id": sid},
+                            on_conflict="parent_code,child_code"
+                        ).execute()
+                        st.success(f"✅ {parent_label}  →  {child_label}  × {qty_per}")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
         with tab2:
             bom_df = get_bom_full()
