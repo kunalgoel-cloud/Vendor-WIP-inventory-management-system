@@ -395,7 +395,7 @@ elif active == "🏷 Item Codes":
     st.markdown('<div class="section-title">Item Codes</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-sub">parent = FG · child = raw component · intermediate = sub-assembly (both parent & child in BOM)</div>', unsafe_allow_html=True)
 
-    tab1, tab2 = st.tabs(["➕ Create", "📋 View All"])
+    tab1, tab2, tab3 = st.tabs(["➕ Create", "📋 View All", "✏️ Edit Item"])
 
     with tab1:
         with st.form("item_form"):
@@ -429,14 +429,55 @@ elif active == "🏷 Item Codes":
             with c3: st.markdown(f"**Intermediate:** {len(df[df['item_type']=='intermediate'])}")
             st.dataframe(df[["item_code","item_name","item_type","uom","safety_stock"]], use_container_width=True, hide_index=True)
             st.markdown(to_csv_dl(df,"item_codes.csv"), unsafe_allow_html=True)
-            st.markdown("---")
-            e_code = st.selectbox("Edit Safety Stock for", df["item_code"].tolist())
-            e_ss   = st.number_input("New Safety Stock", min_value=0.0, step=1.0)
-            if st.button("Update"):
-                sb.table("item_codes").update({"safety_stock":e_ss}).eq("item_code",e_code).eq("site_id",sid).execute()
-                st.success("Updated."); st.rerun()
         else:
             st.markdown('<div class="alert-info alert-box">No items for this site yet.</div>', unsafe_allow_html=True)
+
+    with tab3:
+        df = get_items()
+        if df.empty:
+            st.markdown('<div class="alert-info alert-box">No items for this site yet.</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="alert-info alert-box">ℹ Item Code cannot be changed (it is the unique key used across all transactions). Edit name, type, UOM, or safety stock below.</div>', unsafe_allow_html=True)
+
+            # Select item to edit — pre-populate all fields
+            all_codes = df["item_code"].tolist()
+            sel_code  = st.selectbox("Select Item to Edit", all_codes,
+                format_func=lambda x: f"{x} — {df.set_index('item_code').loc[x,'item_name']}")
+
+            sel_row = df[df["item_code"] == sel_code].iloc[0]
+
+            UOM_OPTIONS  = ["PCS","KG","MTR","BOX","SET","ROLL","LTR"]
+            TYPE_OPTIONS = ["parent","child","intermediate"]
+
+            # Pre-select current values
+            cur_type = sel_row["item_type"] if sel_row["item_type"] in TYPE_OPTIONS else "child"
+            cur_uom  = sel_row["uom"] if sel_row["uom"] in UOM_OPTIONS else "PCS"
+
+            with st.form("edit_item_form"):
+                st.markdown(f"**Editing:** `{sel_code}`")
+                new_name = st.text_input("Item Name *", value=sel_row["item_name"])
+                new_type = st.selectbox("Classification *", TYPE_OPTIONS,
+                    index=TYPE_OPTIONS.index(cur_type))
+                new_uom  = st.selectbox("UOM", UOM_OPTIONS,
+                    index=UOM_OPTIONS.index(cur_uom))
+                new_ss   = st.number_input("Safety Stock", min_value=0.0, step=1.0,
+                    value=float(sel_row["safety_stock"] or 0))
+
+                if st.form_submit_button("Save Changes", type="primary"):
+                    if not new_name.strip():
+                        st.error("Item Name cannot be empty.")
+                    else:
+                        try:
+                            sb.table("item_codes").update({
+                                "item_name":    new_name.strip(),
+                                "item_type":    new_type,
+                                "uom":          new_uom,
+                                "safety_stock": new_ss,
+                            }).eq("item_code", sel_code).eq("site_id", sid).execute()
+                            st.success(f"✅ '{sel_code}' updated successfully.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
 # ══════════════════════════════════════════════
 # PAGE: BOM  — multi-level
