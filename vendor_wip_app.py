@@ -250,67 +250,81 @@ if "site_id" not in st.session_state:
     st.stop()   # Don't render anything else until a site is chosen
 
 # ─────────────────────────────────────────────
-# SIDEBAR  (only shown after site selected)
+# SIDEBAR  — only populated after site selected
+# All DB calls are inside the site_id guard so
+# nothing fires on the site-selection screen.
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(f"""
+    st.markdown("""
     <div class="logo-wrap">
         <div class="logo-title">📦 VendorLens</div>
         <div class="logo-sub">WIP Stock Manager</div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Site switcher
-    st.markdown(f'<div style="font-size:.68rem;color:#475569;padding:.2rem .8rem .0rem">ACTIVE SITE</div>', unsafe_allow_html=True)
-    st.markdown(f'<div style="font-size:.85rem;font-weight:700;color:#e2e8f0;padding:.1rem .8rem .4rem">🏭 {get_site_name()}</div>', unsafe_allow_html=True)
-    if st.button("⇄ Switch Site", key="switch_site", use_container_width=True):
-        for k in ["site_id","site_name","site_code","last_page"]:
-            st.session_state.pop(k, None)
-        st.rerun()
-
-    st.markdown("---")
-    st.markdown('<div class="nav-section">Master Data</div>', unsafe_allow_html=True)
-    page1 = st.radio("", ["🏷 Item Codes","🔗 BOM","🏭 Sites"], key="nav1", label_visibility="collapsed")
-
-    st.markdown('<div class="nav-section">Transactions</div>', unsafe_allow_html=True)
-    page2 = st.radio("", ["📥 Inbound","🔧 Assembly","📤 Outbound","⚖️ Adjustments"], key="nav2", label_visibility="collapsed")
-
-    st.markdown('<div class="nav-section">Intelligence</div>', unsafe_allow_html=True)
-    page3 = st.radio("", ["📊 Stock","🔮 Forecast","📋 Ledger","🗑 Audit Log"], key="nav3", label_visibility="collapsed")
-
-    st.markdown("---")
-    st.markdown('<div class="nav-section">Global Filters</div>', unsafe_allow_html=True)
-    filter_date_from = st.date_input("From", value=date.today().replace(day=1))
-    filter_date_to   = st.date_input("To",   value=date.today())
-
-    all_items_df = get_items()
-    item_opts    = ["All Items"] + (all_items_df["item_code"].tolist() if not all_items_df.empty else [])
-    filter_item  = st.selectbox("Item Filter", item_opts)
-
-    # Live stock pulse
-    st.markdown("---")
-    st.markdown('<div class="nav-section">Stock Status</div>', unsafe_allow_html=True)
-    _cs, _ps = get_child_stock(), get_parent_stock()
-    if not _cs.empty or not _ps.empty:
-        _all = pd.concat([
-            _cs[["item_code","stock_on_hand","safety_stock"]] if not _cs.empty else pd.DataFrame(),
-            _ps[["item_code","stock_on_hand","safety_stock"]] if not _ps.empty else pd.DataFrame()
-        ], ignore_index=True)
-        _ok  = int((_all["stock_on_hand"] > _all["safety_stock"]).sum())
-        _low = int(((_all["stock_on_hand"]>0)&(_all["stock_on_hand"]<=_all["safety_stock"])).sum())
-        _out = int((_all["stock_on_hand"]<=0).sum())
-        st.markdown(f"""
-        <div style="padding:.4rem .2rem;font-size:.8rem;line-height:2.2">
-            <span style="color:#22c55e">●</span> <b style="color:#f1f5f9">{_ok}</b> <span style="color:#64748b">OK</span><br>
-            <span style="color:#f59e0b">●</span> <b style="color:#f1f5f9">{_low}</b> <span style="color:#64748b">LOW</span><br>
-            <span style="color:#ef4444">●</span> <b style="color:#f1f5f9">{_out}</b> <span style="color:#64748b">OUT</span>
-        </div>""", unsafe_allow_html=True)
-        out_items = _cs[_cs["stock_on_hand"]<=0]["item_code"].tolist() if not _cs.empty else []
-        low_items = _cs[(_cs["stock_on_hand"]>0)&(_cs["stock_on_hand"]<=_cs["safety_stock"])]["item_code"].tolist() if not _cs.empty else []
-        if out_items: st.markdown(f'<div style="font-size:.68rem;color:#f87171">🔴 {", ".join(out_items[:4])}</div>', unsafe_allow_html=True)
-        if low_items: st.markdown(f'<div style="font-size:.68rem;color:#fbbf24">🟡 {", ".join(low_items[:4])}</div>', unsafe_allow_html=True)
+    if "site_id" not in st.session_state:
+        # Minimal sidebar on site-selection screen — no DB calls
+        st.markdown('<div style="font-size:.78rem;color:#475569;padding:.6rem .8rem">Select a site to begin.</div>', unsafe_allow_html=True)
+        # Dummy values so the rest of the script doesn't NameError
+        page1 = "🏷 Item Codes"
+        page2 = "📥 Inbound"
+        page3 = "📊 Stock"
+        filter_date_from = date.today().replace(day=1)
+        filter_date_to   = date.today()
+        filter_item      = "All Items"
     else:
-        st.markdown('<div style="font-size:.74rem;color:#475569;padding:.4rem .2rem">No stock data yet.</div>', unsafe_allow_html=True)
+        # ── Site switcher ──────────────────────────────
+        st.markdown('<div style="font-size:.68rem;color:#475569;padding:.2rem .8rem 0">ACTIVE SITE</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-size:.85rem;font-weight:700;color:#e2e8f0;padding:.1rem .8rem .4rem">🏭 {get_site_name()}</div>', unsafe_allow_html=True)
+        if st.button("⇄ Switch Site", key="switch_site", use_container_width=True):
+            for k in ["site_id","site_name","site_code","last_page"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+        st.markdown("---")
+        st.markdown('<div class="nav-section">Master Data</div>', unsafe_allow_html=True)
+        page1 = st.radio("", ["🏷 Item Codes","🔗 BOM","🏭 Sites"], key="nav1", label_visibility="collapsed")
+
+        st.markdown('<div class="nav-section">Transactions</div>', unsafe_allow_html=True)
+        page2 = st.radio("", ["📥 Inbound","🔧 Assembly","📤 Outbound","⚖️ Adjustments"], key="nav2", label_visibility="collapsed")
+
+        st.markdown('<div class="nav-section">Intelligence</div>', unsafe_allow_html=True)
+        page3 = st.radio("", ["📊 Stock","🔮 Forecast","📋 Ledger","🗑 Audit Log"], key="nav3", label_visibility="collapsed")
+
+        st.markdown("---")
+        st.markdown('<div class="nav-section">Global Filters</div>', unsafe_allow_html=True)
+        filter_date_from = st.date_input("From", value=date.today().replace(day=1))
+        filter_date_to   = st.date_input("To",   value=date.today())
+
+        _items_df   = get_items()   # DB call — safe, site_id is set
+        item_opts   = ["All Items"] + (_items_df["item_code"].tolist() if not _items_df.empty else [])
+        filter_item = st.selectbox("Item Filter", item_opts)
+
+        # ── Live stock pulse ───────────────────────────
+        st.markdown("---")
+        st.markdown('<div class="nav-section">Stock Status</div>', unsafe_allow_html=True)
+        _cs = get_child_stock()
+        _ps = get_parent_stock()
+        if not _cs.empty or not _ps.empty:
+            _all = pd.concat([
+                _cs[["item_code","stock_on_hand","safety_stock"]] if not _cs.empty else pd.DataFrame(),
+                _ps[["item_code","stock_on_hand","safety_stock"]] if not _ps.empty else pd.DataFrame()
+            ], ignore_index=True)
+            _ok  = int((_all["stock_on_hand"] > _all["safety_stock"]).sum())
+            _low = int(((_all["stock_on_hand"] > 0) & (_all["stock_on_hand"] <= _all["safety_stock"])).sum())
+            _out = int((_all["stock_on_hand"] <= 0).sum())
+            st.markdown(f"""
+            <div style="padding:.4rem .2rem;font-size:.8rem;line-height:2.2">
+                <span style="color:#22c55e">●</span> <b style="color:#f1f5f9">{_ok}</b> <span style="color:#64748b">OK</span><br>
+                <span style="color:#f59e0b">●</span> <b style="color:#f1f5f9">{_low}</b> <span style="color:#64748b">LOW</span><br>
+                <span style="color:#ef4444">●</span> <b style="color:#f1f5f9">{_out}</b> <span style="color:#64748b">OUT</span>
+            </div>""", unsafe_allow_html=True)
+            out_items = _cs[_cs["stock_on_hand"] <= 0]["item_code"].tolist() if not _cs.empty else []
+            low_items = _cs[(_cs["stock_on_hand"] > 0) & (_cs["stock_on_hand"] <= _cs["safety_stock"])]["item_code"].tolist() if not _cs.empty else []
+            if out_items: st.markdown(f'<div style="font-size:.68rem;color:#f87171">🔴 {", ".join(out_items[:4])}</div>', unsafe_allow_html=True)
+            if low_items: st.markdown(f'<div style="font-size:.68rem;color:#fbbf24">🟡 {", ".join(low_items[:4])}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="font-size:.74rem;color:#475569;padding:.4rem .2rem">No stock data yet.</div>', unsafe_allow_html=True)
 
 # Track active page
 for key, val in {"nav1":page1,"nav2":page2,"nav3":page3}.items():
@@ -588,6 +602,7 @@ elif active == "📥 Inbound":
                         if delete_record("inbound", opts[sel]["id"], dict(opts[sel]), rsn, sid):
                             st.success("Deleted & logged."); st.rerun()
             else: st.markdown('<div class="alert-info alert-box">No records.</div>', unsafe_allow_html=True)
+
 
 # ══════════════════════════════════════════════
 # PAGE: ASSEMBLY
