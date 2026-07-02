@@ -437,9 +437,6 @@ elif active == "🏷 Item Codes":
         if df.empty:
             st.markdown('<div class="alert-info alert-box">No items for this site yet.</div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div class="alert-info alert-box">ℹ Item Code cannot be changed (it is the unique key used across all transactions). Edit name, type, UOM, or safety stock below.</div>', unsafe_allow_html=True)
-
-            # Select item to edit — pre-populate all fields
             all_codes = df["item_code"].tolist()
             sel_code  = st.selectbox("Select Item to Edit", all_codes,
                 format_func=lambda x: f"{x} — {df.set_index('item_code').loc[x,'item_name']}")
@@ -448,33 +445,56 @@ elif active == "🏷 Item Codes":
 
             UOM_OPTIONS  = ["PCS","KG","MTR","BOX","SET","ROLL","LTR"]
             TYPE_OPTIONS = ["parent","child","intermediate"]
-
-            # Pre-select current values
             cur_type = sel_row["item_type"] if sel_row["item_type"] in TYPE_OPTIONS else "child"
             cur_uom  = sel_row["uom"] if sel_row["uom"] in UOM_OPTIONS else "PCS"
 
             with st.form("edit_item_form"):
                 st.markdown(f"**Editing:** `{sel_code}`")
+                new_code = st.text_input("Item Code", value=sel_code,
+                    help="Renaming cascades to all transactions, BOM, and adjustments at this site.")
                 new_name = st.text_input("Item Name *", value=sel_row["item_name"])
-                new_type = st.selectbox("Classification *", TYPE_OPTIONS,
-                    index=TYPE_OPTIONS.index(cur_type))
-                new_uom  = st.selectbox("UOM", UOM_OPTIONS,
-                    index=UOM_OPTIONS.index(cur_uom))
+                new_type = st.selectbox("Classification *", TYPE_OPTIONS, index=TYPE_OPTIONS.index(cur_type))
+                new_uom  = st.selectbox("UOM", UOM_OPTIONS, index=UOM_OPTIONS.index(cur_uom))
                 new_ss   = st.number_input("Safety Stock", min_value=0.0, step=1.0,
                     value=float(sel_row["safety_stock"] or 0))
 
                 if st.form_submit_button("Save Changes", type="primary"):
                     if not new_name.strip():
                         st.error("Item Name cannot be empty.")
+                    elif not new_code.strip():
+                        st.error("Item Code cannot be empty.")
                     else:
                         try:
+                            new_code_clean = new_code.strip().upper()
+                            code_changed   = new_code_clean != sel_code
+
+                            if code_changed:
+                                # Rename via DB function — cascades to all tables atomically
+                                result = sb.rpc("rename_item_code", {
+                                    "p_old_code": sel_code,
+                                    "p_new_code": new_code_clean,
+                                    "p_site_id":  sid,
+                                }).execute()
+                                resp_data = result.data
+                                if isinstance(resp_data, str) and resp_data.startswith("ERROR"):
+                                    st.error(resp_data)
+                                    st.stop()
+                                elif isinstance(resp_data, list) and resp_data and str(resp_data[0]).startswith("ERROR"):
+                                    st.error(str(resp_data[0]))
+                                    st.stop()
+
+                            # Update name / type / uom / safety stock
                             sb.table("item_codes").update({
                                 "item_name":    new_name.strip(),
                                 "item_type":    new_type,
                                 "uom":          new_uom,
                                 "safety_stock": new_ss,
-                            }).eq("item_code", sel_code).eq("site_id", sid).execute()
-                            st.success(f"✅ '{sel_code}' updated successfully.")
+                            }).eq("item_code", new_code_clean).eq("site_id", sid).execute()
+
+                            if code_changed:
+                                st.success(f"✅ '{sel_code}' renamed to '{new_code_clean}' and updated across all records.")
+                            else:
+                                st.success(f"✅ '{new_code_clean}' updated.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
